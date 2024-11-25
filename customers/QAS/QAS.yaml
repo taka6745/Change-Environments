@@ -1,10 +1,2 @@
-Support:
-  - Interface: "run_support_interface.ps1"
-  - Workstation: "run_support_workstation.ps1"
-Development:
-  - Interface: "run_dev_interface.ps1"
-  - Workstation: "run_dev_workstation.ps1"
 Project23:
-  - AppService: "https://project23.example.com"
   - Workstation: "workstation.ps1"
-  - Database: "database.ps1"
