@@ -6,4 +6,5 @@ Development:
   - Workstation: "run_dev_workstation.ps1"
 Project23:
   - AppService: "https://project23.example.com"
-  - Workstation: "run_project23_workstation.ps1"
+  - Workstation: "workstation.ps1"
+  - Database: "database.ps1"
