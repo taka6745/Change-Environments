@@ -21,8 +21,8 @@ foreach ($process in $processes) {
 # Stop and delete services with retries
 Write-Host "Stopping and deleting services..."
 $services = @(
-    "visinet service",
-    "tritech agent service"
+    "TriTech Agent Service",
+    "visinet service"
 )
 
 foreach ($service in $services) {
@@ -33,8 +33,7 @@ foreach ($service in $services) {
 
         # Wait for the service to stop completely
         $retryCount = 0
-        while ((Get-Service -DisplayName $service -ErrorAction SilentlyContinue).Status -eq "StopPending" -or `
-               (Get-Service -DisplayName $service -ErrorAction SilentlyContinue).Status -eq "Running") {
+        while ((Get-Service -DisplayName $service).Status -eq "StopPending" -or (Get-Service -DisplayName $service).Status -eq "Running") {
             Start-Sleep -Seconds 2
             $retryCount++
             if ($retryCount -ge 10) {
@@ -44,7 +43,7 @@ foreach ($service in $services) {
         }
 
         # Confirm the service is stopped
-        if ((Get-Service -DisplayName $service -ErrorAction SilentlyContinue).Status -eq "Stopped") {
+        if ((Get-Service -DisplayName $service).Status -eq "Stopped") {
             Write-Host "Service $service stopped successfully."
         } else {
             Write-Host "Service $service could not be stopped. Proceeding with deletion anyway."
@@ -68,6 +67,7 @@ foreach ($service in $services) {
         }
     }
 }
+
 
 # Function to attempt folder deletion with retry logic
 function Force-DeleteFolder {
@@ -109,9 +109,34 @@ Force-DeleteFolder -Path $triTechPath
 $triTechSoftwarePath = "C:\Program Files\TriTech Software Systems"
 Force-DeleteFolder -Path $triTechSoftwarePath
 
-# Open the URL
-Write-Host "Opening CAD App Service in browser..."
-Start-Process "https://qas23devapp1.sdsi.local/CAD.AppService/#"
+# Unmount and remount Q:
+Write-Host "Unmounting Q: drive if it exists..."
+try {
+    net use Q: /delete /yes > $null 2>&1
+    Write-Host "Successfully unmounted Q:."
+} catch {
+    Write-Host "Failed to unmount Q: or it was not mounted."
+}
+
+Write-Host "Mounting \\qas23dev1\EnterpriseCAD as Q:..."
+try {
+    net use Q: "\\qas23dev1\EnterpriseCAD" > $null 2>&1
+    Write-Host "Successfully mounted \\qas23dev1\EnterpriseCAD as Q:."
+} catch {
+    Write-Host "Failed to mount \\qas23dev1\EnterpriseCAD as Q:. Aborting..."
+    exit 1
+}
+
+# Launch the Interface application
+$interfaceLaunchPath = "Q:\Interface Launch.lnk"
+if (Test-Path $interfaceLaunchPath) {
+    Write-Host "Launching Interface application..."
+    Start-Process $interfaceLaunchPath
+    Write-Host "Interface application launched successfully."
+} else {
+    Write-Host "Interface Launch.lnk not found. Aborting..."
+    exit 1
+}
 
 Write-Host "Script completed."
 exit 0
