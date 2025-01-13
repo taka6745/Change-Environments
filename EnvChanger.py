@@ -3,117 +3,120 @@ from tkinter import ttk, messagebox
 import yaml
 import os
 import subprocess
-import time
 
-# Path to customers folder
-CUSTOMERS_DIR = "customers"
+##############################
+#  STEALTH WINDOW FUNCTIONS  #
+##############################
+def on_enter(event):
+    """Mouse enters the main window area."""
+    # If user is not in the middle of using a dropdown, show fully.
+    if not is_in_combobox_focus():
+        root.attributes("-alpha", 1.0)
 
+def on_leave(event):
+    """Mouse leaves the main window area."""
+    # If the focus is still on one of our comboboxes or its popup, do not hide yet.
+    if not is_in_combobox_focus():
+        root.attributes("-alpha", 0.01)
 
-def load_yaml(file_path):
-    """Load YAML file."""
-    with open(file_path, "r", encoding="utf-8") as file:
+def is_in_combobox_focus():
+    """
+    Return True if focus is on any combobox or its popup menu.
+    This avoids KeyError on 'popdown' and keeps the window visible while combos are open.
+    """
+    try:
+        focus_widget = root.focus_get()
+        if not focus_widget:
+            return False
+        
+        # Convert the widget to a string name
+        widget_name = str(focus_widget)
+        # If the combobox has spawned a popup widget named something like '.!combobox.popdown.focustrap',
+        # we'll consider that as "in combobox focus" so we remain visible.
+        if "popdown" in widget_name.lower():
+            return True
+
+        # Attempt to map the widget name back to an actual widget object
+        w = root.nametowidget(widget_name)
+        return (w in (customer_dropdown, environment_dropdown, type_dropdown))
+    except (KeyError, tk.TclError):
+        # If we cannot find the widget, assume it's a combobox popup or something related
+        return True
+
+def on_combobox_click(event):
+    """When user clicks a combobox, ensure window is fully visible."""
+    root.attributes("-alpha", 1.0)
+
+def on_combobox_unfocus(event):
+    """When combobox loses focus, possibly hide if mouse is outside window and not in another combobox."""
+    if not is_in_combobox_focus():
+        # Simulate a <Leave> event to hide if we're truly outside
+        _event = tk.Event()
+        on_leave(_event)
+
+##############################
+#     WINDOW DRAGGING        #
+##############################
+def start_move(event):
+    """Remember the mouse offset within the title bar for window dragging."""
+    root._drag_x = event.x
+    root._drag_y = event.y
+
+def on_drag(event):
+    """Drag (move) the entire window based on mouse movement in the title bar."""
+    x = root.winfo_x() + (event.x - root._drag_x)
+    y = root.winfo_y() + (event.y - root._drag_y)
+    root.geometry(f"+{x}+{y}")
+
+def close_app():
+    """Close the application."""
+    root.destroy()
+
+##############################
+#        POSITIONING         #
+##############################
+def move_to_top_left(root, window_width=300, window_height=180, x_offset=25, y_offset=25):
+    """
+    Position window near the top-left corner of the screen
+    with a small offset so it’s not flush against the edges.
+    """
+    screen_width = root.winfo_screenwidth()
+    screen_height = root.winfo_screenheight()
+
+    x = 0 + x_offset
+    y = 0 + y_offset
+    root.geometry(f"{window_width}x{window_height}+{x}+{y}")
+
+##############################
+#       YAML + LOGIC         #
+##############################
+def load_config():
+    """Load configuration file."""
+    with open("Config.yaml", "r", encoding="utf-8") as file:
         return yaml.safe_load(file)
 
+def get_customer_environments(config, customer_name):
+    """Get environments for a specific customer."""
+    for customer in config['customers']:
+        if customer['name'] == customer_name:
+            return customer['environments']
+    return []
 
-def get_prerequisite_versions():
-    """Get installed prerequisite versions from both 32-bit and 64-bit registries."""
-    try:
-        ps_commands = [
-            "Get-ItemProperty HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\* "
-            "| Where-Object { $_.DisplayName -like '*InformCAD Prerequisites*' } "
-            "| Select-Object DisplayName, DisplayVersion",
-            "Get-ItemProperty HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\* "
-            "| Where-Object { $_.DisplayName -like '*InformCAD Prerequisites*' } "
-            "| Select-Object DisplayName, DisplayVersion"
-        ]
-        results = []
-        for ps_command in ps_commands:
-            result = subprocess.check_output(["powershell", "-Command", ps_command], text=True)
-            lines = result.strip().splitlines()
-            if len(lines) > 2:  # Ensure there is data beyond headers
-                results.append("\n".join(lines[2:]))  # Skip headers (DisplayName and DisplayVersion)
+def get_environment_version(config, customer_name, environment_name):
+    """Get version for a specific environment."""
+    environments = get_customer_environments(config, customer_name)
+    for env in environments:
+        if env['name'] == environment_name:
+            return env['version']
+    return None
 
-        if results:
-            installed_version = results[0].split(":")[-1].strip()  # Extract version
-            return installed_version
-        return "0.0.0.0"  # Default if not found
-    except subprocess.CalledProcessError:
-        return "0.0.0.0"  # Default if an error occurs
-
-
-def parse_prerequisite_version(version_str):
-    """Extract the major version number from the version string."""
-    try:
-        return int(version_str.split('.')[0])  # Extract the major version (e.g., 23 from 23.1.3.3)
-    except ValueError:
-        return None
-
-
-def uninstall_prerequisites():
-    """Uninstall current prerequisites if found."""
-    try:
-        ps_command = (
-            "Get-ItemProperty HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\* "
-            "| Where-Object { $_.DisplayName -like '*InformCAD Prerequisites*' } "
-            "| Select-Object UninstallString"
-        )
-        uninstall_path = subprocess.check_output(["powershell", "-Command", ps_command], text=True).strip()
-        lines = uninstall_path.splitlines()
-        if len(lines) > 1:  # Ensure data beyond headers
-            uninstall_exe = lines[-1].strip()
-            messagebox.showinfo("Uninstalling Prerequisites", "Uninstaller starting")
-            subprocess.run(uninstall_exe, shell=True)
-        else:
-            messagebox.showwarning("Uninstaller Not Found", "No existing prerequisites found to uninstall.")
-    except subprocess.CalledProcessError as e:
-        messagebox.showerror("Error", f"Failed to start uninstaller: {e}")
-
-
-def install_prerequisites(required_version):
-    """Install the correct prerequisites based on the required version."""
-    major_version = parse_prerequisite_version(required_version)
-    if major_version is None:
-        messagebox.showerror("Error", "Invalid version format in YAML.")
-        return
-
-    if major_version < 20:
-        prereq_path = r"Y:\Software\Suppliers\TriTech\software\Command_5.8.x\5.8.22 InformCAD Prerequisite\InformCAD Prerequisites.msi"
-    else:
-        prereq_path = r"Y:\Software\Suppliers\TriTech\software\CAD Enterprise 22\22.3.1_Prereq\22.3.1_Prereq\InformCAD Prerequisites.msi"
-
-    try:
-        messagebox.showinfo("Installing Prerequisites", f"Installer Started: {prereq_path}")
-        subprocess.run(f"msiexec /i \"{prereq_path}\"", shell=True)
-    except subprocess.CalledProcessError as e:
-        messagebox.showerror("Error", f"Failed to start installer: {e}")
-
-
-def ensure_correct_prerequisites(required_version):
-    """Ensure the correct prerequisites are installed."""
-    while True:
-        installed_version = get_prerequisite_versions().replace("InformCAD Prerequisites ", "")
-        if check_version_compatibility(required_version, installed_version):
-            break
-        else:
-            messagebox.showinfo("Updating Prerequisites", "Incorrect prerequisites found. Updating...")
-            uninstall_prerequisites()
-            time.sleep(5)  # Wait before checking again
-            install_prerequisites(required_version)
-            time.sleep(10)  # Wait for installation to complete
-
-
-def check_version_compatibility(required_version, installed_version):
-    """Check if the installed prerequisite version is compatible with the required version."""
-    required_major = parse_prerequisite_version(required_version)
-    installed_major = parse_prerequisite_version(installed_version)
-
-    if required_major is None or installed_major is None:
-        return False  # Invalid version format
-
-    if (installed_major >= 20 and required_major >= 20) or (installed_major < 20 and required_major < 20):
-        return True  # Compatible
-    return False
-
+def get_environment_attributes(config, customer_name, environment_name):
+    """Get attributes for a specific environment."""
+    environments = get_customer_environments(config, customer_name)
+    for env in environments:
+        if env['name'] == environment_name:
+            return env['attributes']
+    return {}
 
 def on_change():
     """Handle change button click."""
@@ -125,43 +128,52 @@ def on_change():
         messagebox.showerror("Error", "Please select all options!")
         return
 
-    # Build the path for the script to run
-    environment_folder = os.path.join(CUSTOMERS_DIR, selected_customer, selected_environment)
-    customer_file = os.path.join(CUSTOMERS_DIR, selected_customer, f"{selected_customer}.yaml")
-    data = load_yaml(customer_file)
+    # Get version and attributes
+    version = get_environment_version(config, selected_customer, selected_environment)
+    attributes = get_environment_attributes(config, selected_customer, selected_environment)
 
-    # Get the required version and script name
-    try:
-        required_version = next(
-            item['Version']
-            for item in data[selected_environment]
-            if 'Version' in item
-        )
-        script_name = next(
-            item[selected_type]
-            for item in data[selected_environment]
-            if selected_type in item
-        )
-    except StopIteration:
-        messagebox.showerror("Error", f"Type '{selected_type}' or version not found!")
+    if not version:
+        messagebox.showerror("Error", "Version not found!")
         return
 
-    # Ensure correct prerequisites
-    ensure_correct_prerequisites(required_version)
+    major_version = version.split('.')[0]
+    script_name = f"{major_version}_{selected_type}.ps1"
 
-    # Construct full path for the script
-    script_path = os.path.join(environment_folder, script_name)
-
-    if os.path.exists(script_path):
+    if os.path.exists(script_name):
         try:
-            # Execute the script using PowerShell
-            subprocess.run(["powershell", "-File", script_path], check=True)
-            messagebox.showinfo("Success", f"Executed: {script_path}")
+            # Execute the script using PowerShell with parameters
+            if selected_type == "Workstation":
+                appservice = attributes.get('appservice', '')
+                ps_command = [
+                    "powershell",
+                    "-File", script_name,
+                    "-CustomerName", selected_customer,
+                    "-Environment", selected_environment,
+                    "-AppService", appservice
+                ]
+            elif selected_type == "Interface":
+                qdrive = attributes.get('qdrive', '')
+                ps_command = [
+                    "powershell",
+                    "-File", script_name,
+                    "-CustomerName", selected_customer,
+                    "-Environment", selected_environment,
+                    "-QDrive", qdrive
+                ]
+            elif selected_type == "Service":
+                qdrive = attributes.get('qdrive', '')
+                ps_command = [
+                    "powershell",
+                    "-File", script_name,
+                    "-CustomerName", selected_customer,
+                    "-Environment", selected_environment,
+                    "-QDrive", qdrive
+                ]
+            subprocess.run(ps_command, check=True)
         except subprocess.CalledProcessError as e:
             messagebox.showerror("Error", f"Error running script: {e}")
     else:
-        messagebox.showerror("Error", f"Script not found: {script_path}")
-
+        messagebox.showerror("Error", f"Script not found: {script_name}")
 
 def populate_environment_dropdown(event):
     """Update environments when customer is selected."""
@@ -169,79 +181,87 @@ def populate_environment_dropdown(event):
     if not selected_customer:
         return
 
-    customer_file = os.path.join(CUSTOMERS_DIR, selected_customer, f"{selected_customer}.yaml")
-    data = load_yaml(customer_file)
-    environments = list(data.keys())
+    environments = [env['name'] for env in get_customer_environments(config, selected_customer)]
     environment_dropdown["values"] = environments
-    environment_var.set("")  # Clear previous selection
+    environment_var.set("")
 
-
-def populate_type_dropdown(event):
-    """Update types when environment is selected."""
-    selected_customer = customer_var.get()
-    selected_environment = environment_var.get()
-
-    if not (selected_customer and selected_environment):
-        return
-
-    customer_file = os.path.join(CUSTOMERS_DIR, selected_customer, f"{selected_customer}.yaml")
-    data = load_yaml(customer_file)
-
-    # Extract only the keys (e.g., AppService, Workstation), exclude 'Version'
-    types = []
-    for item in data[selected_environment]:
-        for key in item.keys():
-            if key != "Version":
-                types.append(key)
-    type_dropdown["values"] = types
-    type_var.set("")  # Clear previous selection
-
-
-# Main application
+#################################
+#           MAIN APP            #
+#################################
 if __name__ == "__main__":
-    # Fetch installed prerequisites
-    prerequisites = get_prerequisite_versions()
+    config = load_config()
 
-    # Tkinter GUI
     root = tk.Tk()
     root.title("Customer Environment Selector")
 
-    # Display prerequisites at the top
-    prerequisites_label = tk.Label(
-        root,
-        text=f"Installed Prerequisites:\n{prerequisites}",
-        justify="left",
-        anchor="w",
-        padx=10,
-        pady=10,
-    )
-    prerequisites_label.grid(row=0, column=0, columnspan=2, sticky="w")
+    # Overrideredirect removes the standard title bar
+    root.overrideredirect(True)
+    # Always on top
+    root.wm_attributes("-topmost", True)
+    # Start mostly invisible
+    root.attributes("-alpha", 0.01)
 
-    # Dropdowns and buttons
-    tk.Label(root, text="Customer:").grid(row=1, column=0, padx=10, pady=10)
+    # Position in top-left corner, offset so user sees a small border
+    move_to_top_left(root, window_width=280, window_height=200, x_offset=25, y_offset=25)
+
+    # Bind Enter/Leave events to show/hide the entire window
+    root.bind("<Enter>", on_enter)
+    root.bind("<Leave>", on_leave)
+
+    #
+    # CUSTOM TITLE BAR
+    #
+    title_bar = tk.Frame(root, bg="gray", height=30)
+    title_bar.pack(fill="x", side="top")
+
+    # Close button
+    close_btn = tk.Button(title_bar, text=" X ", command=close_app, bg="gray", fg="white", bd=0)
+    close_btn.pack(side="right")
+
+    # A little label to let user click+drag
+    # (We could make the entire title_bar draggable, so we bind to it.)
+    title_label = tk.Label(title_bar, text="  Customer Environment Selector  ",
+                           bg="gray", fg="white")
+    title_label.pack(side="left", padx=(5,0))
+
+    # Bind the dragging events to the entire title_bar
+    title_bar.bind("<Button-1>", start_move)
+    title_bar.bind("<B1-Motion>", on_drag)
+
+    #
+    # MAIN FRAME
+    #
+    main_frame = tk.Frame(root, bg="lightgray")
+    main_frame.pack(fill="both", expand=True)
+
+    # UI Layout
+    tk.Label(main_frame, text="Customer:", bg="lightgray").grid(row=0, column=0, padx=10, pady=10, sticky="e")
     customer_var = tk.StringVar()
-    customer_dropdown = ttk.Combobox(root, textvariable=customer_var, state="readonly")
-    customer_dropdown.grid(row=1, column=1, padx=10, pady=10)
+    customer_dropdown = ttk.Combobox(main_frame, textvariable=customer_var, state="readonly")
+    customer_dropdown["values"] = [customer['name'] for customer in config['customers']]
+    customer_dropdown.grid(row=0, column=1, padx=10, pady=10)
 
-    tk.Label(root, text="Environment:").grid(row=2, column=0, padx=10, pady=10)
+    tk.Label(main_frame, text="Environment:", bg="lightgray").grid(row=1, column=0, padx=10, pady=10, sticky="e")
     environment_var = tk.StringVar()
-    environment_dropdown = ttk.Combobox(root, textvariable=environment_var, state="readonly")
-    environment_dropdown.grid(row=2, column=1, padx=10, pady=10)
+    environment_dropdown = ttk.Combobox(main_frame, textvariable=environment_var, state="readonly")
+    environment_dropdown.grid(row=1, column=1, padx=10, pady=10)
 
-    tk.Label(root, text="Type:").grid(row=3, column=0, padx=10, pady=10)
+    tk.Label(main_frame, text="Type:", bg="lightgray").grid(row=2, column=0, padx=10, pady=10, sticky="e")
     type_var = tk.StringVar()
-    type_dropdown = ttk.Combobox(root, textvariable=type_var, state="readonly")
-    type_dropdown.grid(row=3, column=1, padx=10, pady=10)
+    type_dropdown = ttk.Combobox(main_frame, textvariable=type_var, state="readonly")
+    type_dropdown["values"] = ["Workstation", "Interface", "Service"]
+    type_dropdown.grid(row=2, column=1, padx=10, pady=10)
 
-    change_button = ttk.Button(root, text="Change", command=on_change)
-    change_button.grid(row=4, column=0, columnspan=2, pady=20)
+    change_button = ttk.Button(main_frame, text="Change", command=on_change)
+    change_button.grid(row=3, column=0, columnspan=2, pady=20)
 
-    # Populate customer dropdown
-    customers_data = load_yaml(os.path.join(CUSTOMERS_DIR, "customers.yaml"))
-    customer_dropdown["values"] = customers_data["customers"]
-
-    # Event bindings
+    # When a customer is selected, update environment dropdown
     customer_dropdown.bind("<<ComboboxSelected>>", populate_environment_dropdown)
-    environment_dropdown.bind("<<ComboboxSelected>>", populate_type_dropdown)
+
+    # Ensure the window remains visible if user opens a dropdown
+    # (bind combobox focus events)
+    for cb in (customer_dropdown, environment_dropdown, type_dropdown):
+        cb.bind("<Button-1>", on_combobox_click)   # user clicks to open
+        cb.bind("<FocusOut>", on_combobox_unfocus) # user stops focusing combobox
 
     root.mainloop()

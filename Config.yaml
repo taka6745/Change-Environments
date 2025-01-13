@@ -1,0 +1,35 @@
+customers:
+  - name: EACC
+    environments:
+      - name: Development
+        version: "23.1.1.3"
+        attributes:
+          qdrive: "//nz22dev1/supported_systems"
+          appservice: "https://nz22devapp1.sdsi.local/CAD.AppService/#"
+      - name: Support
+        version: "23.1.1.3"
+        attributes:
+          qdrive: "//nz23sup1/supported_systems"
+          appservice: "https://nz23supapp1.sdsi.local/CAD.AppService/#"
+  - name: QAS
+    environments:
+      - name: Development
+        version: "23.1.3.3"
+        attributes:
+          qdrive: "//qas23dev1/EnterpriseCAD"
+          appservice: "https://qas23devapp1.sdsi.local/CAD.AppService/#"
+      - name: Support
+        version: "5.8"
+        attributes:
+          qdrive: "//qas58sup1/EnterpriseCAD"
+  - name: NSW
+    environments:
+      - name: Development
+        version: "23.1.3.3"
+        attributes:
+          qdrive: "//nsw23dev1/supported_systems"
+          appservice: "https://nsw23devapp1.sdsi.local/CAD.AppService/#"
+      - name: Support
+        version: "5.8"
+        attributes:
+          qdrive: "//nswsup/supported_systems"
