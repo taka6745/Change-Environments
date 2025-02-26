@@ -1,13 +1,11 @@
 <#
 .SYNOPSIS
-    23.x Workstation Setup Script
+    5.x Workstation Setup Script (Graceful + Forceful Cleanup)
 
 .DESCRIPTION
-    Cleans up previous CAD application processes/services on a workstation.
-    Removes TriTech directories (taking ownership if locked).
-    If an InstallPath is specified, runs the installer at that path.
-    Otherwise, opens the specified App Service website so the user can download
-    and install the workstation application manually.
+    Cleans up previous CAD application processes/services, forcibly if needed.
+    Disables/stops/deletes TriTech services, removes TriTech directories (taking ownership if locked).
+    Unmounts/remounts the Q: drive, and finally launches the Workstation application.
 
 .PARAMETER CustomerName
     Name of the customer.
@@ -15,21 +13,11 @@
 .PARAMETER Environment
     Name of the environment (e.g., Production, Test, etc.).
 
-.PARAMETER AppService
-    URL of the App Service website from which the workstation installer can be downloaded
-    (if no InstallPath is specified).
-
-.PARAMETER InstallPath
-    Local path to the installer executable. If provided and exists, script will run this
-    installer instead of opening the App Service website.
+.PARAMETER QDrive
+    UNC path (slash or backslash syntax) for the Q drive location.
 
 .EXAMPLE
-    .\23_Workstation.ps1 -CustomerName "CityName" -Environment "Test" -AppService "https://myappservicewebsite.example.com"
-    (Opens the App Service site in the default browser.)
-
-.EXAMPLE
-    .\23_Workstation.ps1 -CustomerName "CityName" -Environment "Test" -AppService "https://myappservicewebsite.example.com" -InstallPath "C:\WorkstationLaunches\EACC_23.exe"
-    (Runs the local installer at C:\WorkstationLaunches\EACC_23.exe instead of opening the App Service.)
+    .\5_Workstation.ps1 -CustomerName "CityName" -Environment "Test" -QDrive "//myserver/share"
 
 .NOTES
     Must be run as Administrator.
@@ -45,16 +33,13 @@ param (
     [ValidateNotNullOrEmpty()]
     [string]$Environment,
 
-    [Parameter(Mandatory = $true, HelpMessage = "URL for the App Service website.")]
+    [Parameter(Mandatory = $true, HelpMessage = "UNC path for Q drive (can be forward slashes).")]
     [ValidateNotNullOrEmpty()]
-    [string]$AppService,
-
-    [Parameter(Mandatory = $false, HelpMessage = "Path to the installer executable (optional). If specified, the installer is run instead of opening the AppService URL.")]
-    [string]$InstallPath
+    [string]$QDrive
 )
 
 Write-Host "====================================================="
-Write-Host "         23.x Workstation Setup Script"
+Write-Host "       5.x Workstation Setup Script (Enhanced)"
 Write-Host "====================================================="
 Write-Host ""
 
@@ -64,23 +49,20 @@ if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdent
     Exit 1
 }
 
-Write-Host "Running 23.x Workstation Setup"
-Write-Host "  Customer   : $CustomerName"
-Write-Host "  Environment: $Environment"
-Write-Host "  App Service: $AppService"
-if ($InstallPath) {
-    Write-Host "  InstallPath: $InstallPath"
-}
+Write-Host "Parameters received:"
+Write-Host "  CustomerName : $CustomerName"
+Write-Host "  Environment  : $Environment"
+Write-Host "  QDrive       : $QDrive"
+Write-Host ""
+Write-Host "Running 5.x Workstation Setup for '$CustomerName' - '$Environment'"
 Write-Host ""
 
-# ------------------------------ FUNCTIONS ------------------------------
-
-<#
-.SYNOPSIS
-    Gracefully (then forcibly) stop a process by name.
-#>
+# --------------------------------------------------
+# FUNCTION: StopProcessGracefullyOrKill
+# --------------------------------------------------
 function StopProcessGracefullyOrKill {
     param (
+        [Parameter(Mandatory)]
         [string]$ProcessName,
         [int]$TimeoutInSeconds = 5
     )
@@ -90,9 +72,9 @@ function StopProcessGracefullyOrKill {
         Write-Host "Attempting to close process '$ProcessName' gracefully..."
         foreach ($p in $processList) {
             try {
-                $p.CloseMainWindow() | Out-Null
+                $p.CloseMainWindow() | Out-Null  # May fail if no GUI, so ignore errors
             } catch {
-                # If the process has no main window, ignore.
+                # do nothing
             }
         }
 
@@ -100,9 +82,7 @@ function StopProcessGracefullyOrKill {
         $sw = [Diagnostics.Stopwatch]::StartNew()
         while ($sw.Elapsed.TotalSeconds -lt $TimeoutInSeconds) {
             $processList = Get-Process -Name $ProcessName -ErrorAction SilentlyContinue
-            if (-not $processList) {
-                break
-            }
+            if (-not $processList) { break }
             Start-Sleep -Seconds 1
         }
         $sw.Stop()
@@ -122,21 +102,19 @@ function StopProcessGracefullyOrKill {
     }
 }
 
-<#
-.SYNOPSIS
-    Disables, stops, and deletes a service (handling StartPending/StopPending).
-#>
+# --------------------------------------------------
+# FUNCTION: StopDisableDeleteService
+# --------------------------------------------------
 function StopDisableDeleteService {
     param (
         [Parameter(Mandatory)]
-        [string]$ServiceName,  # Service Name or DisplayName
+        [string]$ServiceName,  # Accepts actual service Name or DisplayName
         [int]$TimeoutInSeconds = 15
     )
 
-    # Identify service by Name or DisplayName
+    # 1) Identify the service object
     $serviceObj = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
     if (-not $serviceObj) {
-        # Try WMI by DisplayName
         $serviceWmi = Get-WmiObject Win32_Service -Filter "DisplayName='$ServiceName'" -ErrorAction SilentlyContinue
         if ($serviceWmi) {
             $serviceObj = Get-Service -Name $serviceWmi.Name -ErrorAction SilentlyContinue
@@ -148,7 +126,7 @@ function StopDisableDeleteService {
         return
     }
 
-    # 1) Disable the service so it won't auto-restart
+    # 2) Disable the service so it won't auto-restart
     Write-Host "Disabling service '$($serviceObj.Name)' (DisplayName: '$ServiceName')..."
     try {
         sc.exe config "$($serviceObj.Name)" start= disabled | Out-Null
@@ -158,25 +136,25 @@ function StopDisableDeleteService {
 
     $serviceObj.Refresh()
 
-    # 2) If service is in Running/StartPending/StopPending, try stopping it
+    # 3) If service is Running/StartPending/StopPending, stop it
     if ($serviceObj.Status -in ('Running','StartPending','StopPending')) {
         Write-Host "Stopping service '$($serviceObj.Name)' (Status: $($serviceObj.Status))..."
         try {
-            # -Force helps handle StartPending/StopPending
             Stop-Service -Name $serviceObj.Name -Force -ErrorAction Stop
         } catch {
             Write-Warning "Service '$ServiceName' did not stop gracefully: $($_.Exception.Message)"
         }
 
-        # 3) Wait for it to stop
+        # Wait up to TimeoutInSeconds
         $sw = [Diagnostics.Stopwatch]::StartNew()
         do {
-            Start-Sleep 1
+            Start-Sleep -Seconds 1
             $serviceObj.Refresh()
-        } while (($serviceObj.Status -in ('Running','StartPending','StopPending')) -and ($sw.Elapsed.TotalSeconds -lt $TimeoutInSeconds))
+        } while (($serviceObj.Status -in ('Running','StartPending','StopPending')) -and 
+                 ($sw.Elapsed.TotalSeconds -lt $TimeoutInSeconds))
         $sw.Stop()
 
-        # 4) If still running, forcibly kill the .exe
+        # If still not stopped, forcibly kill .exe
         if ($serviceObj.Status -in ('Running','StartPending','StopPending')) {
             Write-Warning "Service '$ServiceName' did not stop after $TimeoutInSeconds seconds. Forcing kill..."
             $pName = (Get-WmiObject Win32_Service -Filter "Name='$($serviceObj.Name)'" -ErrorAction SilentlyContinue).PathName
@@ -194,7 +172,7 @@ function StopDisableDeleteService {
         Write-Host "Service '$ServiceName' not running (Status: $($serviceObj.Status))."
     }
 
-    # 5) Delete the service from SCM
+    # 4) Delete the service from SCM
     $serviceWmiFinal = Get-WmiObject Win32_Service -Filter "Name='$($serviceObj.Name)'" -ErrorAction SilentlyContinue
     if ($serviceWmiFinal) {
         Write-Host "Deleting service '$($serviceWmiFinal.DisplayName)' from SCM..."
@@ -209,13 +187,12 @@ function StopDisableDeleteService {
     }
 }
 
-<#
-.SYNOPSIS
-    Forcibly remove a directory, with fallback (takeown + icacls), then rename.
-#>
+# --------------------------------------------------
+# FUNCTION: ForceRemoveDirectory
+# --------------------------------------------------
 function ForceRemoveDirectory {
     param (
-        [Parameter(Mandatory = $true)]
+        [Parameter(Mandatory)]
         [string]$Path
     )
 
@@ -261,8 +238,9 @@ function ForceRemoveDirectory {
     }
 }
 
-# -------------------------- MAIN SCRIPT LOGIC --------------------------
+# ----------------------------- MAIN LOGIC ------------------------------
 
+# 1) Stop known CAD processes
 Write-Host "Stopping running CAD processes..."
 $cadProcesses = @(
     "sdsi.icems.monitor",
@@ -281,6 +259,7 @@ foreach ($proc in $cadProcesses) {
 Write-Host "CAD processes stopped (or killed)."
 Write-Host ""
 
+# 2) Stop, disable, and delete the services
 Write-Host "Handling 'visinet service'..."
 StopDisableDeleteService -ServiceName "visinet service" -TimeoutInSeconds 15
 Write-Host ""
@@ -289,6 +268,7 @@ Write-Host "Handling 'TriTech Agent Service'..."
 StopDisableDeleteService -ServiceName "TriTech Agent Service" -TimeoutInSeconds 15
 Write-Host ""
 
+# 3) Remove TriTech directories
 Write-Host "Deleting TriTech directories if they exist..."
 $directories = @(
     "C:\TriTech",
@@ -299,40 +279,62 @@ foreach ($dir in $directories) {
     Write-Host ""
 }
 
-Write-Host "Workstation cleanup steps completed."
+# 4) Unmount Q drive (if mounted)
+Write-Host "Attempting to unmount Q drive..."
+try {
+    net use Q: /delete /yes 2>$null
+    Write-Host "Q drive unmounted successfully (if it was mounted)."
+} catch {
+    Write-Warning "Could not unmount Q drive: $($_.Exception.Message)"
+}
 Write-Host ""
 
-# -------------------------- NEW INSTALLATION BEHAVIOR --------------------------
+# 5) Mount Q drive
+Write-Host "Mounting new Q drive from config..."
+$QDrivePath = "\\" + $QDrive.TrimStart('/').Replace('/', '\')
+Write-Host "UNC Path resolved to: $QDrivePath"
+Write-Host ""
 
-if (-not [string]::IsNullOrEmpty($InstallPath)) {
-    # If InstallPath was provided, attempt to run the local installer
-    Write-Host "InstallPath detected. Attempting to run local installer at '$InstallPath'."
+try {
+    Write-Host "Trying 'net use Q:'..."
+    net use Q: $QDrivePath | Out-Null
 
-    if (Test-Path $InstallPath) {
-        try {
-            Write-Host "Launching installer..."
-            # Start-Process with -Wait if you want to pause until it finishes.
-            # -Verb RunAs to ensure it runs elevated (if needed).
-            Start-Process -FilePath $InstallPath -Verb RunAs
-            Write-Host "Local installer started successfully."
-        } catch {
-            Write-Error "Error launching local installer at '$InstallPath': $($_.Exception.Message)"
-        }
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "Q drive mounted successfully using net use."
+    } else {
+        Write-Host "Failed to mount Q drive using net use. Trying New-PSDrive..."
+        New-PSDrive -Name 'Q' -PSProvider FileSystem -Root $QDrivePath -Persist | Out-Null
+        Write-Host "Q drive mounted successfully using New-PSDrive."
     }
-    else {
-        Write-Warning "Specified InstallPath '$InstallPath' does not exist. Skipping local installer."
-    }
+} catch {
+    Write-Error "Error mounting Q drive: $($_.Exception.Message)"
+    exit 1
 }
-else {
-    # Otherwise, open the App Service website in the default browser
-    Write-Host "Launching App Service website for manual workstation install:"
-    Write-Host "  $AppService"
+Write-Host ""
+
+# 6) Verify Q drive is accessible
+Write-Host "Verifying Q drive..."
+if (-not (Test-Path "Q:\")) {
+    Write-Error "Q drive not accessible after mounting. Aborting."
+    exit 1
+}
+Write-Host "Q drive is accessible."
+Write-Host ""
+
+# 7) Launch Workstation application
+$LaunchPath = "Q:\Workstation Launch.lnk"
+if (Test-Path $LaunchPath) {
+    Write-Host "Launching Workstation application..."
     try {
-        Start-Process $AppService
-        Write-Host "App Service website opened successfully."
+        Start-Process $LaunchPath
+        Write-Host "Workstation application launched successfully."
     } catch {
-        Write-Error "Error opening App Service website: $($_.Exception.Message)"
+        Write-Error "Error launching Workstation application: $($_.Exception.Message)"
+        exit 1
     }
+} else {
+    Write-Error "Workstation Launch.lnk not found at $LaunchPath. Aborting."
+    exit 1
 }
 
 Write-Host "`nScript completed successfully."

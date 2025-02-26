@@ -143,14 +143,38 @@ def on_change():
         try:
             # Execute the script using PowerShell with parameters
             if selected_type == "Workstation":
-                appservice = attributes.get('appservice', '')
-                ps_command = [
+                if major_version == "23":
+                    if attributes.get('install_path', '') == "":
+                        appservice = attributes.get('appservice', '')
+                        ps_command = [
+                        "powershell",
+                        "-File", script_name,
+                        "-CustomerName", selected_customer,
+                        "-Environment", selected_environment,
+                        "-AppService", appservice,
+                    ]
+                    else:
+                        appservice = attributes.get('appservice', '')
+                        install_path = attributes.get('install_path', '')
+
+                        ps_command = [
+                        "powershell",
+                        "-File", script_name,
+                        "-CustomerName", selected_customer,
+                        "-Environment", selected_environment,
+                        "-AppService", appservice,
+                        "-InstallPath", install_path
+                        ]
+                elif major_version == "5":
+                    qdrive = attributes.get('qdrive', '')
+
+                    ps_command = [
                     "powershell",
                     "-File", script_name,
                     "-CustomerName", selected_customer,
                     "-Environment", selected_environment,
-                    "-AppService", appservice
-                ]
+                    "-QDrive", qdrive
+                    ]
             elif selected_type == "Interface":
                 qdrive = attributes.get('qdrive', '')
                 ps_command = [
